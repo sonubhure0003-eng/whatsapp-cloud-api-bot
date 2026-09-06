@@ -85,6 +85,39 @@ async function sendTextMessage(to, body) {
   }
 }
 
+async function sendTemplateMessage(to, templateName, languageCode = "en", bodyParams = []) {
+  try {
+    const payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "template",
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+      },
+    };
+    if (Array.isArray(bodyParams) && bodyParams.length > 0) {
+      payload.template.components = [
+        {
+          type: "body",
+          parameters: bodyParams.map((text) => ({ type: "text", text: String(text) })),
+        },
+      ];
+    }
+    const resp = await axios.post(GRAPH_URL, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+    });
+    console.log(`Template "${templateName}" sent to ${to}`);
+    return { to, success: true, data: resp.data };
+  } catch (err) {
+    console.error(`Template send failed to ${to}:`, err.response?.data || err.message);
+    return { to, success: false, error: err.response?.data || err.message };
+  }
+}
+
 function checkApiKey(req, res) {
   if (!API_KEY) return true;
   const key = req.headers["x-api-key"];
@@ -134,6 +167,54 @@ app.post("/send-bulk", async (req, res) => {
   res.json({ total: results.length, sent, failed, results });
 });
 
+app.post("/send-template", async (req, res) => {
+  if (!checkApiKey(req, res)) return;
+  const { to, template, language = "en", bodyParams = [] } = req.body;
+  if (!to || !template) {
+    return res.status(400).json({ error: "`to` and `template` are required" });
+  }
+  const result = await sendTemplateMessage(to, template, language, bodyParams);
+  if (result.success) {
+    res.json({ success: true, data: result.data });
+  } else {
+    res.status(500).json({ success: false, error: result.error });
+  }
+});
+
+app.post("/send-bulk-template", async (req, res) => {
+  if (!checkApiKey(req, res)) return;
+  const {
+    numbers,
+    template,
+    language = "en",
+    bodyParams = [],
+    delayMs = 1000,
+  } = req.body;
+  if (!Array.isArray(numbers) || numbers.length === 0 || !template) {
+    return res.status(400).json({
+      error: "`numbers` (non-empty array) and `template` are required",
+    });
+  }
+  const results = [];
+  for (const entry of numbers) {
+    const to = typeof entry === "string" ? entry : entry.to;
+    const params =
+      typeof entry === "string" ? bodyParams : entry.bodyParams || bodyParams;
+    if (!to) {
+      results.push({ to: null, success: false, error: "Missing `to` in numbers entry" });
+      continue;
+    }
+    const result = await sendTemplateMessage(to, template, language, params);
+    results.push(result);
+    if (delayMs > 0) {
+      await sleep(delayMs);
+    }
+  }
+  const sent = results.filter((r) => r.success).length;
+  const failed = results.length - sent;
+  res.json({ total: results.length, sent, failed, results });
+});
+
 app.get("/", (_req, res) => {
   res.send("WhatsApp Cloud API bot is running");
 });
@@ -141,4 +222,3 @@ app.get("/", (_req, res) => {
 app.listen(PORT, () => {
   console.log(`Server chalu zhala on port ${PORT}`);
 });
-
